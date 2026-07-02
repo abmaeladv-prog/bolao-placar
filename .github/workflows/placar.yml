@@ -1,0 +1,29 @@
+name: Atualiza placar do bolao
+
+on:
+  schedule:
+    # A cada 5 minutos (menor intervalo permitido pelo GitHub).
+    # Observacao: o GitHub pode atrasar os agendamentos em periodos de
+    # alta demanda, entao na pratica pode rodar alguns minutos depois.
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}   # permite rodar manualmente pelo botao "Run workflow"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: placar
+  cancel-in-progress: false
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    env:
+      TZ: America/Sao_Paulo    # para casar com os horarios do bolao (Brasil)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Atualizar placar
+        run: python atualizar_placar.py
