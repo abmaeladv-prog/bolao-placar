@@ -172,6 +172,9 @@ def gravar_jogos(lista):
     http_json(url, method="PATCH", body={"fields": {"list": fs_encode(lista)}})
 
 
+SUMMARY_URL = ESPN_URL.replace("scoreboard", "summary") + "?event="
+
+
 def buscar_espn():
     dados = http_json(ESPN_URL)
     jogos = []
@@ -183,16 +186,53 @@ def buscar_espn():
             away = next(c for c in cs if c.get("homeAway") == "away")
             st = (ev.get("status") or {}).get("type", {})
             jogos.append({
+                "id": ev.get("id"),
                 "home": home["team"]["displayName"],
                 "away": away["team"]["displayName"],
+                "home_id": (home.get("team") or {}).get("id"),
+                "away_id": (away.get("team") or {}).get("id"),
                 "gh": home.get("score"),
                 "ga": away.get("score"),
                 "state": st.get("state"),
+                "name": st.get("name", ""),
                 "detail": st.get("shortDetail", ""),
             })
         except Exception:
             continue
     return jogos
+
+
+def eh_prorrogacao(name, detail):
+    """True se o jogo passou do tempo normal (prorrogacao/penaltis)."""
+    n = (name or "").upper()
+    d = (detail or "").upper()
+    if "OVERTIME" in n or "EXTRA" in n or "SHOOTOUT" in n or "PENALT" in n:
+        return True
+    if "PENS" in d or "AET" in d or d.strip() == "ET":
+        return True
+    return False
+
+
+def placar_tempo_normal(event_id, home_id, away_id):
+    """Placar do fim do TEMPO NORMAL + acrescimos: conta so os gols dos
+    periodos 1 e 2 (ignora prorrogacao e penaltis), via keyEvents do summary."""
+    try:
+        sm = http_json(SUMMARY_URL + str(event_id))
+    except Exception:
+        return None, None
+    gh = ga = 0
+    for k in sm.get("keyEvents", []) or []:
+        if not k.get("scoringPlay"):
+            continue
+        per = (k.get("period") or {}).get("number")
+        if per is None or per > 2:
+            continue  # periodo 1 = 1o tempo, 2 = 2o tempo; 3+ = prorrogacao/penaltis
+        tid = str((k.get("team") or {}).get("id") or "")
+        if tid == str(home_id):
+            gh += 1
+        elif tid == str(away_id):
+            ga += 1
+    return gh, ga
 
 
 def to_int(x):
@@ -225,24 +265,42 @@ def casar_e_atualizar(jogos, espn, agora):
         m = idx.get(chave)
         ini = parse_dt(g.get("dateISO"))
         comecou = ini is not None and agora >= ini
+        espn_state = None
 
         novoA = novoB = None
         ao_vivo = None
         origem = ""
         if m:
             fx = m["fx"]
-            state = fx["state"]
+            espn_state = fx["state"]
+            name = fx.get("name", "")
+            detail = fx.get("detail", "")
+            eh_home = (norm(g.get("teamA")) == m["home_norm"])
             gh, ga = to_int(fx["gh"]), to_int(fx["ga"])
-            if state in ("in", "post") and gh is not None and ga is not None:
-                if norm(g.get("teamA")) == m["home_norm"]:
-                    novoA, novoB = gh, ga
-                else:
-                    novoA, novoB = ga, gh
-                ao_vivo = (state == "in")
-                origem = fx["detail"]
 
-        # comecou mas ainda sem placar da ESPN -> 0x0 ao vivo (dentro da janela)
-        if novoA is None and comecou and ini is not None and agora <= ini + timedelta(hours=JANELA_JOGO_HORAS):
+            if eh_prorrogacao(name, detail):
+                # passou do tempo normal: ENCERRA no placar dos 90' + acrescimos
+                # (conta so gols dos periodos 1 e 2; ignora prorrogacao/penaltis)
+                rgh, rga = placar_tempo_normal(fx.get("id"), fx.get("home_id"), fx.get("away_id"))
+                if rgh is not None:
+                    novoA, novoB = (rgh, rga) if eh_home else (rga, rgh)
+                    ao_vivo = False
+                    origem = "tempo normal (encerrado; sem prorrogacao)"
+                # se o summary falhar, nao mexe (mantem o placar atual)
+            elif espn_state == "post" and gh is not None and ga is not None:
+                # FT: decidido no tempo normal -> placar da ESPN ja e o do tempo normal
+                novoA, novoB = (gh, ga) if eh_home else (ga, gh)
+                ao_vivo = False
+                origem = detail
+            elif espn_state == "in" and gh is not None and ga is not None:
+                # tempo normal, ao vivo
+                novoA, novoB = (gh, ga) if eh_home else (ga, gh)
+                ao_vivo = True
+                origem = detail
+
+        # comecou mas ainda sem dados da ESPN (nao achado ou 'pre') -> 0x0 ao vivo
+        if novoA is None and comecou and (m is None or espn_state == "pre") \
+                and ini is not None and agora <= ini + timedelta(hours=JANELA_JOGO_HORAS):
             novoA, novoB, ao_vivo, origem = 0, 0, True, "inicio"
 
         if novoA is None:
