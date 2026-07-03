@@ -4,12 +4,12 @@ Atualizador automatico de placar - Bolao Copa 2026
 ---------------------------------------------------
 Le os jogos no Firebase (doc bolao/matches), busca o placar da Copa na
 API publica da ESPN (gratis, SEM chave) e grava scoreA/scoreB/live de
-volta no Firebase. Todos que estiverem com o bolao aberto veem o placar
-mudar sozinho.
+volta no Firebase.
 
-- Nao precisa instalar nada (usa so a biblioteca padrao do Python 3).
-- Nao precisa de chave nem cadastro.
-- Roda no PC (Agendador de Tarefas) e/ou na nuvem (GitHub Actions).
+- No horario de inicio de cada jogo, marca 0x0 ao vivo (mesmo antes do
+  primeiro gol), e vai atualizando conforme os gols saem.
+- Nao mexe em jogo ja finalizado (respeita ajuste manual do organizador).
+- Nao precisa instalar nada nem ter chave.
 
 Uso:
     python atualizar_placar.py           # roda uma vez (grava no Firebase)
@@ -20,54 +20,65 @@ Uso:
 import sys, json, unicodedata, urllib.request, urllib.error, os
 from datetime import datetime, timedelta
 
-try:  # acentuacao correta no console do Windows (nao falha se nao houver console)
+try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
 # =========================== CONFIGURACAO ===========================
-# Fonte do placar: API publica da ESPN (Copa do Mundo). Sem chave.
 ESPN_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
-
-# Firebase deste bolao (ja preenchido).
 FIREBASE_PROJECT = "bolao-copa-2026-ae070"
 FIREBASE_WEB_KEY = "AIzaSyDj8dJg6FgVXcdANyizRO4rBDwJX6YvIOs"
 
-# De-para: nome do time NA ESPN -> nome como esta no seu bolao.
-# A comparacao ignora maiusculas e acentos ("Belgica" casa com "BELGICA").
-# Conforme a Copa avanca e entram times novos, acrescente aqui.
+# De-para: nome do time NA ESPN (ingles) -> nome no seu bolao (portugues).
+# A comparacao ignora maiusculas e acentos. Cobre os principais paises.
 TEAM_MAP = {
-    "England": "Inglaterra",
-    "Congo DR": "RD Congo",
-    "DR Congo": "RD Congo",
-    "Belgium": "Belgica",
-    "Senegal": "Senegal",
-    "United States": "EUA",
-    "USA": "EUA",
-    "Bosnia-Herzegovina": "Bosnia",
-    "Bosnia and Herzegovina": "Bosnia",
-    "Brazil": "Brasil",
-    "Croatia": "Croacia",
-    "France": "Franca",
-    "Spain": "Espanha",
-    "Germany": "Alemanha",
-    "Netherlands": "Holanda",
-    "South Korea": "Coreia do Sul",
-    "Saudi Arabia": "Arabia Saudita",
-    "Morocco": "Marrocos",
-    "Switzerland": "Suica",
-    "Turkiye": "Turquia",
-    "Turkey": "Turquia",
-    "Ivory Coast": "Costa do Marfim",
+    "England": "Inglaterra", "Scotland": "Escocia", "Wales": "Pais de Gales",
+    "Northern Ireland": "Irlanda do Norte", "Ireland": "Irlanda",
+    "France": "Franca", "Spain": "Espanha", "Germany": "Alemanha",
+    "Portugal": "Portugal", "Italy": "Italia", "Netherlands": "Holanda",
+    "Belgium": "Belgica", "Croatia": "Croacia", "Switzerland": "Suica",
+    "Austria": "Austria", "Poland": "Polonia", "Denmark": "Dinamarca",
+    "Sweden": "Suecia", "Norway": "Noruega", "Ukraine": "Ucrania",
+    "Serbia": "Servia", "Czechia": "Tchequia", "Czech Republic": "Tchequia",
+    "Turkiye": "Turquia", "Turkey": "Turquia", "Greece": "Grecia",
+    "Hungary": "Hungria", "Romania": "Romenia", "Russia": "Russia",
+    "Slovenia": "Eslovenia", "Slovakia": "Eslovaquia", "Finland": "Finlandia",
+    "Iceland": "Islandia", "Georgia": "Georgia", "Albania": "Albania",
+    "Brazil": "Brasil", "Argentina": "Argentina", "Uruguay": "Uruguai",
+    "Colombia": "Colombia", "Chile": "Chile", "Peru": "Peru",
+    "Ecuador": "Equador", "Paraguay": "Paraguai", "Bolivia": "Bolivia",
+    "Venezuela": "Venezuela", "United States": "EUA", "USA": "EUA",
+    "Mexico": "Mexico", "Canada": "Canada", "Costa Rica": "Costa Rica",
+    "Panama": "Panama", "Honduras": "Honduras", "Jamaica": "Jamaica",
+    "Curacao": "Curacao", "Guatemala": "Guatemala", "Haiti": "Haiti",
+    "Morocco": "Marrocos", "Senegal": "Senegal", "Tunisia": "Tunisia",
+    "Algeria": "Argelia", "Egypt": "Egito", "Nigeria": "Nigeria",
+    "Cameroon": "Camaroes", "Ghana": "Gana", "Ivory Coast": "Costa do Marfim",
+    "Cote d'Ivoire": "Costa do Marfim", "Mali": "Mali", "South Africa": "Africa do Sul",
+    "Cape Verde": "Cabo Verde", "Congo DR": "RD Congo", "DR Congo": "RD Congo",
+    "Angola": "Angola", "Burkina Faso": "Burkina Faso", "Guinea": "Guine",
+    "Equatorial Guinea": "Guine Equatorial", "Gabon": "Gabao", "Benin": "Benin",
+    "Zambia": "Zambia", "Uganda": "Uganda", "Tanzania": "Tanzania",
+    "Kenya": "Quenia", "Namibia": "Namibia", "Mozambique": "Mocambique",
+    "Japan": "Japao", "South Korea": "Coreia do Sul", "Korea Republic": "Coreia do Sul",
+    "Iran": "Ira", "Iraq": "Iraque", "Saudi Arabia": "Arabia Saudita",
+    "Qatar": "Catar", "United Arab Emirates": "Emirados Arabes", "UAE": "Emirados Arabes",
+    "Australia": "Australia", "New Zealand": "Nova Zelandia",
+    "Uzbekistan": "Uzbequistao", "Jordan": "Jordania", "Bahrain": "Bahrein",
+    "China": "China", "China PR": "China", "Indonesia": "Indonesia",
+    "Bosnia-Herzegovina": "Bosnia", "Bosnia and Herzegovina": "Bosnia",
+    "Israel": "Israel", "Kosovo": "Kosovo", "Montenegro": "Montenegro",
+    "North Macedonia": "Macedonia do Norte", "Luxembourg": "Luxemburgo",
+    "New Caledonia": "Nova Caledonia", "Suriname": "Suriname",
 }
 
-# So chama a fonte a partir de X minutos antes do inicio do jogo.
-MINUTOS_ANTES = 5
+MINUTOS_ANTES = 5          # comeca a olhar a partir de 5 min antes do inicio
+JANELA_JOGO_HORAS = 3      # forca 0x0 ao vivo ate 3h apos o inicio (se sem dados)
 # ====================================================================
 
 PASTA = os.path.dirname(os.path.abspath(__file__))
 ARQ_LOG = os.path.join(PASTA, "log_placar.txt")
-
 DRY = "--dry" in sys.argv
 FORCE = "--force" in sys.argv
 
@@ -83,7 +94,6 @@ def log(msg):
 
 
 def norm(s):
-    """Maiusculas, sem acento, sem espacos extras - para comparar nomes."""
     if not s:
         return ""
     s = unicodedata.normalize("NFKD", str(s))
@@ -91,7 +101,6 @@ def norm(s):
     return " ".join(s.upper().split())
 
 
-# ---------- Firestore REST: codificar/decodificar ----------
 def fs_encode(v):
     if v is None:
         return {"nullValue": None}
@@ -135,7 +144,6 @@ def fs_decode(field):
     return val
 
 
-# ---------- HTTP ----------
 def http_json(url, headers=None, method="GET", body=None):
     hdrs = {"User-Agent": "Mozilla/5.0 (bolao-placar)"}
     hdrs.update(headers or {})
@@ -149,7 +157,6 @@ def http_json(url, headers=None, method="GET", body=None):
         return json.loads(raw) if raw else {}
 
 
-# ---------- Firebase ----------
 FS_URL = ("https://firestore.googleapis.com/v1/projects/%s/databases/(default)"
           "/documents/bolao/matches?key=%s") % (FIREBASE_PROJECT, FIREBASE_WEB_KEY)
 
@@ -165,9 +172,7 @@ def gravar_jogos(lista):
     http_json(url, method="PATCH", body={"fields": {"list": fs_encode(lista)}})
 
 
-# ---------- ESPN ----------
 def buscar_espn():
-    """Retorna lista de jogos: {home, away, gh, ga, state, detail}."""
     dados = http_json(ESPN_URL)
     jogos = []
     for ev in dados.get("events", []) or []:
@@ -182,7 +187,7 @@ def buscar_espn():
                 "away": away["team"]["displayName"],
                 "gh": home.get("score"),
                 "ga": away.get("score"),
-                "state": st.get("state"),          # pre / in / post
+                "state": st.get("state"),
                 "detail": st.get("shortDetail", ""),
             })
         except Exception:
@@ -197,57 +202,61 @@ def to_int(x):
         return None
 
 
-def casar_e_atualizar(jogos, espn):
-    """Atualiza scoreA/scoreB/live dos jogos do bolao que casam com a ESPN."""
-    idx = {}
-    for fx in espn:
-        home_pt = TEAM_MAP.get(fx["home"], fx["home"])
-        away_pt = TEAM_MAP.get(fx["away"], fx["away"])
-        chave = frozenset([norm(home_pt), norm(away_pt)])
-        idx[chave] = {"fx": fx, "home_norm": norm(home_pt)}
-
-    mudou = False
-    for g in jogos:
-        # Respeita jogo ja finalizado: uma vez encerrado (live False + placar
-        # preenchido), o script NAO sobrescreve. Assim, se o organizador ajustar
-        # (ex.: contar so o tempo normal numa prorrogacao), o ajuste permanece.
-        if g.get("live") is False and g.get("scoreA") is not None:
-            continue
-        chave = frozenset([norm(g.get("teamA")), norm(g.get("teamB"))])
-        m = idx.get(chave)
-        if not m:
-            continue
-        fx = m["fx"]
-        state = fx["state"]
-        if state == "pre":
-            continue  # nao comecou
-        gh, ga = to_int(fx["gh"]), to_int(fx["ga"])
-        if gh is None or ga is None:
-            continue
-
-        # descobre qual lado corresponde ao teamA do bolao
-        if norm(g.get("teamA")) == m["home_norm"]:
-            novoA, novoB = gh, ga
-        else:
-            novoA, novoB = ga, gh
-
-        ao_vivo = (state == "in")   # 'post' = encerrado
-        atual = (g.get("scoreA"), g.get("scoreB"), bool(g.get("live")))
-        novo = (novoA, novoB, ao_vivo)
-        if atual != novo:
-            g["scoreA"], g["scoreB"], g["live"] = novo
-            mudou = True
-            tag = "AO VIVO" if ao_vivo else "ENCERRADO"
-            log("  %s x %s -> %d:%d (%s / %s)" % (
-                g.get("teamA"), g.get("teamB"), novoA, novoB, fx["detail"], tag))
-    return mudou
-
-
 def parse_dt(iso):
     try:
         return datetime.fromisoformat(iso)
     except Exception:
         return None
+
+
+def casar_e_atualizar(jogos, espn, agora):
+    idx = {}
+    for fx in espn:
+        home_pt = TEAM_MAP.get(fx["home"], fx["home"])
+        away_pt = TEAM_MAP.get(fx["away"], fx["away"])
+        idx[frozenset([norm(home_pt), norm(away_pt)])] = {"fx": fx, "home_norm": norm(home_pt)}
+
+    mudou = False
+    for g in jogos:
+        # jogo ja finalizado (live False + placar): respeita, nao mexe
+        if g.get("live") is False and g.get("scoreA") is not None:
+            continue
+        chave = frozenset([norm(g.get("teamA")), norm(g.get("teamB"))])
+        m = idx.get(chave)
+        ini = parse_dt(g.get("dateISO"))
+        comecou = ini is not None and agora >= ini
+
+        novoA = novoB = None
+        ao_vivo = None
+        origem = ""
+        if m:
+            fx = m["fx"]
+            state = fx["state"]
+            gh, ga = to_int(fx["gh"]), to_int(fx["ga"])
+            if state in ("in", "post") and gh is not None and ga is not None:
+                if norm(g.get("teamA")) == m["home_norm"]:
+                    novoA, novoB = gh, ga
+                else:
+                    novoA, novoB = ga, gh
+                ao_vivo = (state == "in")
+                origem = fx["detail"]
+
+        # comecou mas ainda sem placar da ESPN -> 0x0 ao vivo (dentro da janela)
+        if novoA is None and comecou and ini is not None and agora <= ini + timedelta(hours=JANELA_JOGO_HORAS):
+            novoA, novoB, ao_vivo, origem = 0, 0, True, "inicio"
+
+        if novoA is None:
+            continue
+
+        atual = (g.get("scoreA"), g.get("scoreB"), bool(g.get("live")))
+        novo = (novoA, novoB, bool(ao_vivo))
+        if atual != novo:
+            g["scoreA"], g["scoreB"], g["live"] = novo
+            mudou = True
+            tag = "AO VIVO" if ao_vivo else "ENCERRADO"
+            log("  %s x %s -> %d:%d (%s / %s)" % (
+                g.get("teamA"), g.get("teamB"), novoA, novoB, origem, tag))
+    return mudou
 
 
 def main():
@@ -261,8 +270,6 @@ def main():
     hoje = datetime.now().strftime("%Y-%m-%d")
     agora = datetime.now()
 
-    # jogos de HOJE que ja comecaram (ou vao comecar em minutos) e ainda nao
-    # estao concluidos (concluido = live False com placar preenchido).
     relevantes = []
     for g in jogos:
         d = g.get("dateISO")
@@ -285,7 +292,7 @@ def main():
         return
     log("Jogos retornados pela ESPN: %d" % len(espn))
 
-    mudou = casar_e_atualizar(jogos, espn)
+    mudou = casar_e_atualizar(jogos, espn, agora)
     if not mudou:
         log("Sem mudancas no placar.")
         return
